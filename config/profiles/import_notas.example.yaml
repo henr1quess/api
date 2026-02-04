@@ -1,0 +1,9 @@
+turma_id: ""
+disciplina_id: ""
+fase_nota_id: ""
+slot: ""
+input_file: "data/inbox/notas.csv"
+allow_write: false
+batch_size: 100
+sobrescrever_notas: false
+sobrescrever_frequencia: false

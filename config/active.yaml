@@ -1,0 +1,2 @@
+routine: import_notas
+profile: profiles/import_notas.example.yaml
