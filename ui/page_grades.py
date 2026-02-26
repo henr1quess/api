@@ -8,10 +8,13 @@ import streamlit as st
 from activesoft_client import endpoints as ep
 from services.grades import build_payloads, parse_notas_csv, validate_grades
 from services.audit import generate_run_id, log_action
-from services.export_utils import df_to_csv_bytes, df_to_excel_bytes, to_json_bytes
+from services.export_utils import to_json_bytes
 from ui.components import (
+    cached_fetch,
     download_section,
+    format_turma_label,
     loading,
+    parse_diarios,
     require_client,
     show_validation_summary,
 )
@@ -34,49 +37,45 @@ def render():
             file_name="modelo_notas.csv",
             mime="text/csv",
         )
-    else:
-        st.info("Template nao encontrado em templates/modelo_notas.csv")
 
     st.divider()
 
-    # ── Step 1: Select context ───────────────────────────────────
+    # ── Step 1: Select context (cached) ──────────────────────────
     st.subheader("1. Selecionar contexto")
 
-    with loading("Carregando turmas..."):
-        turmas = ep.lista_turmas(client)
+    df_turmas, _ = cached_fetch(
+        endpoint_name="lista_turmas",
+        endpoint_path="/api/v0/lista_turmas/",
+        fetch_fn=lambda: ep.lista_turmas(client),
+        params={"mostrar_todas_as_turmas": "true"},
+        st_key="grades_turmas",
+    )
 
-    if not turmas:
+    if df_turmas is None or df_turmas.empty:
         st.warning("Nenhuma turma encontrada.")
         return
 
-    turma_options = {}
-    for t in turmas:
-        nome = t.get("nome_turma_completo") or t.get("nome_turma") or f"ID {t.get('id')}"
-        turma_options[nome] = t
-    turma_label = st.selectbox("Turma", list(turma_options.keys()))
+    turmas = df_turmas.to_dict("records")
+    turma_options = {format_turma_label(t): t for t in turmas}
+    turma_label = st.selectbox("Turma", list(turma_options.keys()), key="grades_turma_sel")
     turma = turma_options[turma_label]
     turma_id = turma.get("id")
 
-    with loading("Carregando diarios da turma..."):
-        diarios_data = ep.diarios(client, turma_id)
+    # Diarios (cached per turma)
+    df_diarios, _ = cached_fetch(
+        endpoint_name="diarios",
+        endpoint_path="/api/v0/diarios/",
+        fetch_fn=lambda tid=turma_id: ep.diarios(client, tid),
+        params={"turma": str(turma_id)},
+        st_key=f"grades_diarios_{turma_id}",
+    )
 
-    if not diarios_data:
+    if df_diarios is None or df_diarios.empty:
         st.warning("Nenhum diario encontrado para esta turma.")
         return
 
-    # Extract unique disciplines and fases
-    disc_map = {}
-    fase_map = {}
-    for d in diarios_data:
-        disc_id = d.get("disciplina_id") or d.get("disciplina", {}).get("id")
-        disc_nome = d.get("disciplina_nome") or d.get("disciplina", {}).get("nome") or str(disc_id)
-        if disc_id:
-            disc_map[disc_id] = disc_nome
-
-        fase_id = d.get("fase_nota_id") or d.get("fase_nota", {}).get("id")
-        fase_nome = d.get("fase_nota_nome") or d.get("fase_nota", {}).get("nome") or str(fase_id)
-        if fase_id:
-            fase_map[fase_id] = fase_nome
+    diarios_data = df_diarios.to_dict("records")
+    disc_map, fase_map = parse_diarios(diarios_data)
 
     if not disc_map:
         st.warning("Nenhuma disciplina encontrada nos diarios.")
@@ -84,17 +83,13 @@ def render():
 
     col1, col2 = st.columns(2)
     with col1:
-        disc_label = st.selectbox(
-            "Disciplina",
-            [f"{v} (ID: {k})" for k, v in disc_map.items()],
-        )
+        disc_options = [f"{v} (ID: {k})" for k, v in disc_map.items()]
+        disc_label = st.selectbox("Disciplina", disc_options)
         disciplina_id = int(disc_label.split("ID: ")[1].rstrip(")"))
     with col2:
         if fase_map:
-            fase_label = st.selectbox(
-                "Fase / Nota",
-                [f"{v} (ID: {k})" for k, v in fase_map.items()],
-            )
+            fase_options = [f"{v} (ID: {k})" for k, v in fase_map.items()]
+            fase_label = st.selectbox("Fase / Nota", fase_options)
             fase_nota_id = int(fase_label.split("ID: ")[1].rstrip(")"))
         else:
             fase_nota_id = st.number_input("Fase Nota ID", min_value=1, step=1)
@@ -103,9 +98,7 @@ def render():
     with col_a:
         sobrescrever = st.checkbox("Sobrescrever nota existente", value=False)
     with col_b:
-        sobrescrever_confirmada = st.checkbox(
-            "Sobrescrever nota confirmada", value=False
-        )
+        sobrescrever_confirmada = st.checkbox("Sobrescrever nota confirmada", value=False)
 
     st.divider()
 
@@ -131,7 +124,6 @@ def render():
     st.subheader("3. Preview dos dados")
     st.dataframe(df, use_container_width=True)
     st.caption(f"{len(df)} linhas carregadas.")
-
     st.divider()
 
     # ── Step 4: Validate ─────────────────────────────────────────
@@ -147,12 +139,10 @@ def render():
         return
 
     show_validation_summary(validated)
-
     st.divider()
 
     # ── Step 5: Generate payloads ────────────────────────────────
     st.subheader("5. Gerar Payloads (simulacao)")
-
     batch_size = st.number_input("Tamanho do lote", min_value=1, value=200, step=50)
 
     if st.button("Gerar payloads", key="btn_gen_payloads"):
@@ -200,13 +190,8 @@ def render():
     st.caption(f"Run ID: `{run_id}`")
 
     total_notas = sum(len(p.get("notas", [])) for p in payloads)
-    st.success(
-        f"Gerados **{len(payloads)} lote(s)** com **{total_notas} notas** prontas para envio."
-    )
-
-    st.warning(
-        "POST esta **bloqueado** (modo simulacao). Baixe os artefatos para revisao."
-    )
+    st.success(f"Gerados **{len(payloads)} lote(s)** com **{total_notas} notas** prontas para envio.")
+    st.warning("POST esta **bloqueado** (modo simulacao). Baixe os artefatos para revisao.")
 
     download_section(
         label="Relatorio de validacao",

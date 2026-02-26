@@ -3,11 +3,13 @@
 import pandas as pd
 import streamlit as st
 
-from activesoft_client import endpoints as ep
 from activesoft_client.endpoints import EXPLORER_ENDPOINTS
 from services.audit import generate_run_id, log_action
-from services.export_utils import records_to_df
-from ui.components import download_section, loading, require_client
+from ui.components import (
+    cached_fetch,
+    download_section,
+    require_client,
+)
 
 
 def render():
@@ -41,57 +43,47 @@ def render():
 
     st.divider()
 
-    # ── Execute ──────────────────────────────────────────────────
-    if st.button("Consultar", key="btn_explorer_query"):
-        run_id = generate_run_id()
+    # ── Fetch (cached) ───────────────────────────────────────────
+    # Build a unique st_key using endpoint + params
+    params_suffix = "_".join(f"{k}{v}" for k, v in sorted(params.items())) if params else "noparams"
+    st_key = f"explorer_{selected_key}_{params_suffix}"
 
-        with loading(f"Buscando {selected_key}..."):
-            try:
-                data = client.get_all(endpoint_info["path"], params=params or None)
-            except Exception as exc:
-                st.error(f"Erro na requisicao: {exc}")
-                return
+    df, meta = cached_fetch(
+        endpoint_name=selected_key,
+        endpoint_path=endpoint_info["path"],
+        fetch_fn=lambda: client.get_all(endpoint_info["path"], params=params or None),
+        params=params or None,
+        st_key=st_key,
+    )
 
-        df = records_to_df(data) if isinstance(data, list) else pd.DataFrame()
-
-        st.session_state["explorer_data"] = data
-        st.session_state["explorer_df"] = df
-        st.session_state["explorer_run_id"] = run_id
-        st.session_state["explorer_endpoint"] = selected_key
-
-        log_action(
-            run_id=run_id,
-            action=f"explorer_{selected_key}",
-            params=params,
-            result_counts={"registros": len(df)},
-        )
-
-    df = st.session_state.get("explorer_df")
-    data = st.session_state.get("explorer_data")
-    run_id = st.session_state.get("explorer_run_id", "")
-    ep_name = st.session_state.get("explorer_endpoint", "")
-
-    if df is None:
-        st.info("Selecione um endpoint e clique 'Consultar'.")
+    if df is None or df.empty:
+        st.info("Nenhum registro retornado.")
         return
+
+    run_id = generate_run_id()
+
+    log_action(
+        run_id=run_id,
+        action=f"explorer_{selected_key}",
+        params=params,
+        result_counts={"registros": len(df)},
+    )
 
     # ── Display results ──────────────────────────────────────────
-    st.subheader(f"Resultado: {ep_name}")
+    st.subheader(f"Resultado: {selected_key}")
     st.caption(f"{len(df)} registros. Run ID: `{run_id}`")
-
-    if df.empty:
-        st.warning("Nenhum registro retornado.")
-        return
-
     st.dataframe(df, use_container_width=True, height=400)
 
     st.divider()
 
     # ── Downloads ────────────────────────────────────────────────
     st.subheader("Exportar")
+
+    # Use sanitized name for filenames (no slash)
+    safe_name = selected_key.replace("/", "_")
     download_section(
-        label=ep_name,
+        label=safe_name,
         df=df,
-        json_data=data,
-        filename_prefix=f"explorer_{ep_name}_{run_id}",
+        json_data=df.to_dict("records"),
+        filename_prefix=f"explorer_{safe_name}_{run_id}",
     )

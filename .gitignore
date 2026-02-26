@@ -1,5 +1,6 @@
 .env
 data/
+data_cache/
 exports/
 logs/
 __pycache__/
