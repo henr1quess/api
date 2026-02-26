@@ -1,0 +1,4 @@
+data_hora;tipo_entrada_saida;matricula;id_responsavel_acompanhante;comentario
+2026-02-26T07:30:00;E;000123;;
+2026-02-26T12:00:00;S;000123;15;Saiu com responsável
+2026-02-26T07:30:00;E;000124;;
