@@ -284,4 +284,24 @@ EXPLORER_ENDPOINTS: Dict[str, Dict[str, Any]] = {
         "description": "Formas de recebimento",
         "params": [],
     },
+    "financeiro/calculo_multa_juros": {
+        "path": "/api/v0/financeiro/calculo_multa_juros/",
+        "description": "Calculo de multa e juros",
+        "params": [],
+    },
+    "informacoes_boleto": {
+        "path": "/api/v0/informacoes_boleto/",
+        "description": "Informacoes de boleto por aluno",
+        "params": ["id_aluno"],
+    },
+    "detalhe_boletim": {
+        "path": "/api/v0/detalhe_boletim/",
+        "description": "Detalhe do boletim por aluno",
+        "params": ["aluno_id", "turma_id", "turmas_ativas"],
+    },
+    "listar_frequencia_aluno": {
+        "path": "/api/v0/listar_frequencia_aluno/",
+        "description": "Frequencia do aluno",
+        "params": ["aluno_id", "data_inicial", "data_final", "tipo_marcacao"],
+    },
 }
