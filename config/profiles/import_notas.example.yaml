@@ -1,9 +1,13 @@
 turma_id: ""
 disciplina_id: ""
 fase_nota_id: ""
-slot: ""
-input_file: "data/inbox/notas.csv"
-allow_write: false
-batch_size: 100
-sobrescrever_notas: false
-sobrescrever_frequencia: false
+slot: "nota01"
+
+input:
+  file: "data/inbox/notas.csv"
+
+write_policy:
+  allow_write: false
+  batch_size: 100
+  sobrescrever_nota: false
+  sobrescrever_nota_confirmada: false

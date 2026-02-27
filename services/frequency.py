@@ -1,11 +1,11 @@
 """Frequency services – query attendance data and build marking payloads."""
 
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
 from activesoft_client import endpoints as ep
-from services.validators import MarcacaoFrequencia
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -112,6 +112,14 @@ def validate_marcacoes(df: pd.DataFrame) -> pd.DataFrame:
         data_hora = str(row.get("data_hora", "")).strip()
         if not data_hora or data_hora.lower() in ("nan", "none"):
             row_msgs.append("data_hora vazia")
+        else:
+            try:
+                datetime.fromisoformat(data_hora)
+            except ValueError:
+                row_msgs.append(
+                    f"data_hora formato invalido: '{data_hora}' "
+                    "(esperado ISO 8601, ex: 2025-03-15T08:30:00)"
+                )
 
         comentario = str(row.get("comentario", "")).strip()
         if comentario and comentario.lower() not in ("nan", "none", "") and len(comentario) > 50:

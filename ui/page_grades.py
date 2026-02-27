@@ -120,6 +120,13 @@ def render():
         st.error(f"Erro ao ler CSV: {exc}")
         return
 
+    # ── Context fingerprint: clear stale results on context change ──
+    ctx_key = f"{turma_id}_{disciplina_id}_{fase_nota_id}_{uploaded.name}_{uploaded.size}"
+    if st.session_state.get("grades_ctx_key") != ctx_key:
+        for k in ("grades_validated", "grades_payloads", "grades_run_id"):
+            st.session_state.pop(k, None)
+        st.session_state["grades_ctx_key"] = ctx_key
+
     # ── Step 3: Preview ──────────────────────────────────────────
     st.subheader("3. Preview dos dados")
     st.dataframe(df, use_container_width=True)
