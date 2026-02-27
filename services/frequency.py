@@ -1,39 +1,48 @@
 """Frequency services – query attendance data and build marking payloads."""
 
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from activesoft_client import ActiveSoftClient
 from activesoft_client import endpoints as ep
-from services.validators import MarcacaoFrequencia
 
 
 # ═══════════════════════════════════════════════════════════════════
 # Consulta de frequencia (GET)
 # ═══════════════════════════════════════════════════════════════════
 
-PRESENCE_CODES = {
-    "\u2022": "Presenca",     # bullet "•"
+# The API may return the bullet as U+2022, or other variants.
+# We normalise by checking the first character.
+_PRESENCE_LOOKUP: Dict[str, str] = {
+    "\u2022": "Presenca",   # bullet •
+    "\u00b7": "Presenca",   # middle dot ·
+    "P": "Presenca",
     "F": "Falta",
     "D": "Dispensa",
     "J": "Justificada",
 }
 
 
-def fetch_frequencia_raw(client: ActiveSoftClient, diario_id: int) -> pd.DataFrame:
-    """Fetch raw attendance data for a diario and return as DataFrame."""
-    data = ep.diario_frequencia(client, diario_id)
-    if not data:
-        return pd.DataFrame()
-    return pd.DataFrame(data)
+def _classify_presence(val: Any) -> str:
+    """Classify a single presence cell value."""
+    if val is None:
+        return "Nao_registrado"
+    if isinstance(val, float) and pd.isna(val):
+        return "Nao_registrado"
+    s = str(val).strip()
+    if not s:
+        return "Nao_registrado"
+    # Try exact match first, then first character
+    if s in _PRESENCE_LOOKUP:
+        return _PRESENCE_LOOKUP[s]
+    if s[0] in _PRESENCE_LOOKUP:
+        return _PRESENCE_LOOKUP[s[0]]
+    return "Nao_registrado"
 
 
 def summarize_frequencia(df: pd.DataFrame) -> pd.DataFrame:
-    """From raw frequency DataFrame, produce a summary per student.
-
-    Counts columns matching 'presenca_falta_*' using the presence codes.
-    """
+    """From raw frequency DataFrame, produce a summary per student."""
     if df.empty:
         return df
 
@@ -41,24 +50,22 @@ def summarize_frequencia(df: pd.DataFrame) -> pd.DataFrame:
     if not freq_cols:
         return df
 
-    # Identify student columns (everything except presenca_falta_*)
     id_cols = [c for c in df.columns if not c.startswith("presenca_falta_")]
 
     summary_rows: List[Dict] = []
     for _, row in df.iterrows():
-        counts = {"Presenca": 0, "Falta": 0, "Dispensa": 0, "Justificada": 0, "Nao_registrado": 0}
+        counts = {
+            "Presenca": 0,
+            "Falta": 0,
+            "Dispensa": 0,
+            "Justificada": 0,
+            "Nao_registrado": 0,
+        }
         for col in freq_cols:
-            val = row.get(col)
-            if val is None or (isinstance(val, float) and pd.isna(val)):
-                counts["Nao_registrado"] += 1
-            elif str(val).strip() in PRESENCE_CODES:
-                counts[PRESENCE_CODES[str(val).strip()]] += 1
-            else:
-                counts["Nao_registrado"] += 1
+            cls = _classify_presence(row.get(col))
+            counts[cls] += 1
 
-        entry: Dict[str, Any] = {}
-        for c in id_cols:
-            entry[c] = row[c]
+        entry: Dict[str, Any] = {c: row[c] for c in id_cols}
         entry.update(counts)
         entry["Total_aulas"] = len(freq_cols)
         summary_rows.append(entry)
@@ -105,6 +112,14 @@ def validate_marcacoes(df: pd.DataFrame) -> pd.DataFrame:
         data_hora = str(row.get("data_hora", "")).strip()
         if not data_hora or data_hora.lower() in ("nan", "none"):
             row_msgs.append("data_hora vazia")
+        else:
+            try:
+                datetime.fromisoformat(data_hora)
+            except ValueError:
+                row_msgs.append(
+                    f"data_hora formato invalido: '{data_hora}' "
+                    "(esperado ISO 8601, ex: 2025-03-15T08:30:00)"
+                )
 
         comentario = str(row.get("comentario", "")).strip()
         if comentario and comentario.lower() not in ("nan", "none", "") and len(comentario) > 50:
