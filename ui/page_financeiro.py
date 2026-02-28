@@ -189,51 +189,91 @@ def _render_cobranca():
 
     fin_df = st.session_state.get("fin_df", pd.DataFrame())
     if fin_df.empty:
-        st.info("Carregue os dados financeiros na aba Executivo primeiro.")
+        st.info("Carregue os dados financeiros na aba **Executivo** primeiro.")
         return
 
-    # ── Aging table ──────────────────────────────────────────────
-    if "aging_bucket" in fin_df.columns:
+    # ── Filters ──────────────────────────────────────────────────
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        if "mes_competencia" in fin_df.columns:
+            meses = ["Todos"] + sorted(fin_df["mes_competencia"].dropna().unique().tolist())
+            mes_fil = st.selectbox("Mes:", meses, key="cobr_mes")
+        else:
+            mes_fil = "Todos"
+    with col_f2:
+        turma_col = next((c for c in ["nome_turma", "turma"] if c in fin_df.columns), None)
+        if turma_col:
+            turmas = ["Todas"] + sorted(fin_df[turma_col].dropna().unique().tolist())
+            turma_fil = st.selectbox("Turma:", turmas, key="cobr_turma")
+        else:
+            turma_fil = "Todas"
+
+    filtered = fin_df.copy()
+    if mes_fil != "Todos" and "mes_competencia" in filtered.columns:
+        filtered = filtered[filtered["mes_competencia"] == mes_fil]
+    if turma_fil != "Todas" and turma_col:
+        filtered = filtered[filtered[turma_col] == turma_fil]
+
+    # ── Aging table + chart ───────────────────────────────────────
+    if "aging_bucket" in filtered.columns:
         st.subheader("Aging da Carteira")
-        valor_col = None
-        for c in ["valor", "valor_nominal", "valor_titulo", "vlr_nominal"]:
-            if c in fin_df.columns:
-                valor_col = c
-                break
+
+        # Find valor column (real API uses valor_documento)
+        valor_col = next(
+            (c for c in [
+                "valor_documento", "valor_recebido_total",
+                "valor", "valor_nominal", "valor_titulo", "vlr_nominal",
+            ] if c in filtered.columns),
+            None,
+        )
 
         if valor_col:
-            aging = fin_df.groupby("aging_bucket", observed=True).agg(
+            aging = filtered.groupby("aging_bucket", observed=True).agg(
                 Quantidade=("aging_bucket", "count"),
-                **{f"Valor Total (R$)": (valor_col, lambda x: pd.to_numeric(x, errors="coerce").sum())},
+                **{"Valor Total (R$)": (valor_col, lambda x: pd.to_numeric(x, errors="coerce").sum())},
             ).reset_index()
             aging.columns = ["Faixa", "Quantidade", "Valor Total (R$)"]
-            st.dataframe(aging, use_container_width=True, hide_index=True)
         else:
-            aging = fin_df["aging_bucket"].value_counts().reset_index()
+            aging = filtered["aging_bucket"].value_counts().reset_index()
             aging.columns = ["Faixa", "Quantidade"]
+            aging["Valor Total (R$)"] = 0.0
+
+        col_tbl, col_chart = st.columns([1, 1])
+        with col_tbl:
             st.dataframe(aging, use_container_width=True, hide_index=True)
+        with col_chart:
+            st.bar_chart(aging.set_index("Faixa")["Quantidade"], use_container_width=True)
 
     st.divider()
 
     # ── Critical titles ──────────────────────────────────────────
-    if "dias_atraso" in fin_df.columns:
-        st.subheader("Titulos Criticos (maior atraso)")
-        criticos = fin_df[fin_df["dias_atraso"] > 0].sort_values("dias_atraso", ascending=False).head(20)
-        if not criticos.empty:
-            # Show relevant columns
+    if "dias_atraso" in filtered.columns:
+        inadimplentes = filtered[filtered["dias_atraso"] > 0]
+        st.subheader(f"Titulos em Atraso ({len(inadimplentes)})")
+
+        if inadimplentes.empty:
+            st.success("Nenhum titulo em atraso nos filtros selecionados!")
+        else:
+            # Show top 50, sorted by overdue days
+            criticos = inadimplentes.sort_values("dias_atraso", ascending=False).head(50)
+
+            # Real API columns + derived columns
             show_cols = [c for c in [
-                "nome_aluno", "dias_atraso", "aging_bucket",
+                "nome_aluno", "aluno", "nome_turma", "turma",
+                "dias_atraso", "aging_bucket",
+                "valor_documento", "valor_recebido_total",
                 "valor", "valor_nominal", "vlr_nominal",
-                "mes_competencia", "status", "situacao",
+                "mes_competencia",
+                "situacao_titulo", "status", "situacao",
+                "dt_vencimento", "data_vencimento",
             ] if c in criticos.columns]
+
             if show_cols:
                 st.dataframe(criticos[show_cols], use_container_width=True, hide_index=True)
             else:
                 st.dataframe(criticos, use_container_width=True, hide_index=True)
 
-            download_section("Cobranca", df=criticos, filename_prefix="cobranca_criticos")
-        else:
-            st.success("Nenhum titulo em atraso!")
+            download_section("Cobranca", df=inadimplentes, filename_prefix="cobranca_inadimplentes")
 
 
 def _render_inconsistencias(client):

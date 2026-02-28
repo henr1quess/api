@@ -163,18 +163,37 @@ def _render_farol_risco():
     c1.metric("🔴 Risco Alto", alto)
     c2.metric("🟡 Risco Medio", medio)
     c3.metric("🟢 Risco Baixo", baixo)
-    c4.metric("Total alunos", total)
+    c4.metric("Total alunos em risco", total)
 
     st.divider()
 
-    # ── Filterable table ─────────────────────────────────────────
-    # Filter by risk type
-    tipos = ["Todos"] + list(risco_df["tipo_risco"].unique())
-    selected_tipo = st.selectbox("Filtrar por tipo de risco:", tipos, key="risco_tipo_filter")
+    # ── Risk breakdown charts ─────────────────────────────────────
+    col_chart, col_tipo_chart = st.columns(2)
+    with col_chart:
+        nivel_counts = risco_df.groupby("nivel_risco").size().reset_index(name="Quantidade")
+        st.caption("Distribuicao por nivel de risco")
+        st.bar_chart(nivel_counts.set_index("nivel_risco")["Quantidade"])
+    with col_tipo_chart:
+        tipo_counts = risco_df.groupby("tipo_risco").size().reset_index(name="Quantidade")
+        st.caption("Distribuicao por tipo de risco")
+        st.bar_chart(tipo_counts.set_index("tipo_risco")["Quantidade"])
 
-    display_df = risco_df
+    st.divider()
+
+    # ── Filters ──────────────────────────────────────────────────
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        tipos = ["Todos"] + list(risco_df["tipo_risco"].unique())
+        selected_tipo = st.selectbox("Tipo de risco:", tipos, key="risco_tipo_filter")
+    with col_f2:
+        niveis = ["Todos", "ALTO", "MEDIO", "BAIXO"]
+        selected_nivel = st.selectbox("Nivel:", niveis, key="risco_nivel_filter")
+
+    display_df = risco_df.copy()
     if selected_tipo != "Todos":
-        display_df = risco_df[risco_df["tipo_risco"] == selected_tipo]
+        display_df = display_df[display_df["tipo_risco"] == selected_tipo]
+    if selected_nivel != "Todos":
+        display_df = display_df[display_df["nivel_risco"] == selected_nivel]
 
     # Show relevant columns
     show_cols = [c for c in [
@@ -182,8 +201,11 @@ def _render_farol_risco():
         "nivel_risco", "detalhes", "acao_sugerida",
     ] if c in display_df.columns]
 
-    st.dataframe(display_df[show_cols] if show_cols else display_df,
-                 use_container_width=True, hide_index=True)
+    st.dataframe(
+        display_df[show_cols] if show_cols else display_df,
+        use_container_width=True,
+        hide_index=True,
+    )
 
     download_section("Farol de Risco", df=risco_df, filename_prefix="farol_risco")
 

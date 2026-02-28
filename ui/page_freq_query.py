@@ -93,6 +93,38 @@ def render():
         },
     )
 
+    # ── Enrich with student names if not already present ─────────
+    _name_cols = ["nome_aluno", "nome", "nome_completo", "aluno"]
+    if not any(c in df_raw.columns for c in _name_cols):
+        try:
+            id_col = next(
+                (c for c in ["aluno_id", "matricula", "id_aluno"] if c in df_raw.columns),
+                None,
+            )
+            if id_col:
+                alunos_raw = ep.acesso_alunos(client)
+                nome_map = {
+                    str(a.get("id_aluno") or a.get("id")): (
+                        a.get("nome_aluno") or a.get("nome") or ""
+                    )
+                    for a in alunos_raw
+                    if a.get("id_aluno") or a.get("id")
+                }
+                if nome_map:
+                    df_raw = df_raw.copy()
+                    df_raw.insert(
+                        0, "nome_aluno",
+                        df_raw[id_col].astype(str).map(nome_map).fillna(""),
+                    )
+                    if not df_summary.empty:
+                        df_summary = df_summary.copy()
+                        df_summary.insert(
+                            0, "nome_aluno",
+                            df_summary[id_col].astype(str).map(nome_map).fillna(""),
+                        )
+        except Exception:
+            pass  # best-effort; don't block the page
+
     # ── Display results ──────────────────────────────────────────
     st.subheader("Dados brutos")
     st.dataframe(df_raw, use_container_width=True, height=300)

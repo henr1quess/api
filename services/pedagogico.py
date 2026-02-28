@@ -5,8 +5,17 @@ Provides:
 - Bulk fetch of diary frequency data (turma-based)
 - Risk detection (truancy + low grades)
 - Diary audit (missing entries / compliance)
+
+Real API structures (discovered via testing):
+- listar_frequencia_aluno: returns 404 when no data (handled in endpoints.py)
+- detalhe_boletim: {"aluno": "Name", "aluno_matricula": "123",
+    "boletim": [{"turma": "Class", "boletim": [
+        {"IdDisciplina": 1, "NomeDisciplina": "Math", "Nota01": 8.5, ...
+         "NotaFase": 7.75, "Faltas": 2, "QuantAulasDadas": 20,
+         "MediaMinimaAprovacao": 6.0, "CabecBoletim": "1 TRI"}]}]}
 """
 
+import logging
 import time
 from datetime import date, datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -17,11 +26,14 @@ import streamlit as st
 from services.cache_store import CacheStore, TTL_PERMANENT, DatasetMeta
 from services.frequency import _classify_presence
 
+logger = logging.getLogger(__name__)
+
 # ═══════════════════════════════════════════════════════════════════
 # Bulk fetch functions
 # ═══════════════════════════════════════════════════════════════════
 
-_FETCH_DELAY = 0.15  # seconds between API calls
+_FETCH_DELAY = 0.20  # seconds between API calls
+_PARTIAL_SAVE_INTERVAL = 50  # save partial results every N items
 
 
 def fetch_all_frequencia_aluno(
@@ -34,7 +46,10 @@ def fetch_all_frequencia_aluno(
     """Fetch frequency records for every student and return consolidated DataFrame.
 
     Uses listar_frequencia_aluno (per-student endpoint).
-    Permanent cache — only calls API on first load or manual refresh.
+    Permanent cache -- only calls API on first load or manual refresh.
+
+    Resilient: catches per-student errors, saves partial results.
+    The 404 "no data" case is already handled in endpoints.py (returns []).
     """
     from activesoft_client.endpoints import listar_frequencia_aluno
 
@@ -53,7 +68,7 @@ def fetch_all_frequencia_aluno(
     all_records: List[Dict] = []
     progress = st.progress(0, text="Carregando frequencia...")
     errors: List[str] = []
-
+    consecutive_errors = 0
     today_str = date.today().isoformat()
 
     for i, aluno_id in enumerate(alunos_ids):
@@ -68,13 +83,27 @@ def fetch_all_frequencia_aluno(
                 for r in records:
                     r["_id_aluno_fetch"] = aluno_id
                 all_records.extend(records)
+            consecutive_errors = 0
         except Exception as e:
             errors.append(f"Aluno {aluno_id}: {e}")
+            consecutive_errors += 1
+            logger.warning("Freq fetch error for aluno %s: %s", aluno_id, e)
+
+            if consecutive_errors >= 5:
+                logger.warning("5 consecutive freq errors -- pausing 10s")
+                time.sleep(10.0)
+                consecutive_errors = 0
 
         progress.progress(
             (i + 1) / len(alunos_ids),
-            text=f"Carregando frequencia: {i + 1}/{len(alunos_ids)}",
+            text=f"Carregando frequencia: {i + 1}/{len(alunos_ids)} "
+                 f"({len(all_records)} registros)",
         )
+
+        # Periodic partial save
+        if (i + 1) % _PARTIAL_SAVE_INTERVAL == 0 and all_records:
+            _save_partial(store, cache_key, "pedagogico/frequencia_consolidada",
+                          all_records, {"data_inicial": data_inicial})
 
         if i < len(alunos_ids) - 1:
             time.sleep(_FETCH_DELAY)
@@ -82,14 +111,20 @@ def fetch_all_frequencia_aluno(
     progress.empty()
 
     if errors:
-        st.warning(f"{len(errors)} erro(s) ao buscar frequencia. Primeiros 5:")
-        for err in errors[:5]:
-            st.caption(f"  - {err}")
+        with st.expander(
+            f"⚠️ {len(errors)} erro(s) ao buscar frequencia "
+            f"({len(all_records)} registros salvos)",
+            expanded=False,
+        ):
+            for err in errors[:20]:
+                st.caption(f"  - {err}")
+            if len(errors) > 20:
+                st.caption(f"  ... e mais {len(errors) - 20} erros.")
 
     df = pd.DataFrame(all_records) if all_records else pd.DataFrame()
     meta = store._save(
         cache_key, "pedagogico/frequencia_consolidada",
-        {"data_inicial": data_inicial}, df, TTL_PERMANENT,
+        {"data_inicial": data_inicial, "erros": len(errors)}, df, TTL_PERMANENT,
     )
     return df, meta
 
@@ -102,10 +137,11 @@ def fetch_all_boletins(
 ) -> Tuple[pd.DataFrame, Optional[DatasetMeta]]:
     """Fetch report cards for every student and return consolidated DataFrame.
 
-    Uses detalhe_boletim (per-student, returns dict — needs flatten).
-    Permanent cache.
+    Uses detalhe_boletim (per-student, returns nested dict -- needs flatten).
+    Permanent cache. Resilient to per-student errors.
     """
     from activesoft_client.endpoints import detalhe_boletim
+    from activesoft_client.http_client import APIError
 
     cache_key = store.make_key(
         client.base_url,
@@ -122,19 +158,41 @@ def fetch_all_boletins(
     all_records: List[Dict] = []
     progress = st.progress(0, text="Carregando boletins...")
     errors: List[str] = []
+    consecutive_errors = 0
 
     for i, aluno_id in enumerate(alunos_ids):
         try:
             result = detalhe_boletim(client, aluno_id=aluno_id, turmas_ativas=True)
             flattened = _flatten_boletim(aluno_id, result)
             all_records.extend(flattened)
+            consecutive_errors = 0
+        except APIError as e:
+            # 404 means no boletim for this student -- not an error
+            if e.status == 404:
+                pass
+            else:
+                errors.append(f"Aluno {aluno_id}: {e}")
+                consecutive_errors += 1
         except Exception as e:
             errors.append(f"Aluno {aluno_id}: {e}")
+            consecutive_errors += 1
+            logger.warning("Boletim fetch error for aluno %s: %s", aluno_id, e)
+
+            if consecutive_errors >= 5:
+                logger.warning("5 consecutive boletim errors -- pausing 10s")
+                time.sleep(10.0)
+                consecutive_errors = 0
 
         progress.progress(
             (i + 1) / len(alunos_ids),
-            text=f"Carregando boletins: {i + 1}/{len(alunos_ids)}",
+            text=f"Carregando boletins: {i + 1}/{len(alunos_ids)} "
+                 f"({len(all_records)} disciplinas)",
         )
+
+        # Periodic partial save
+        if (i + 1) % _PARTIAL_SAVE_INTERVAL == 0 and all_records:
+            _save_partial(store, cache_key, "pedagogico/boletins_consolidados",
+                          all_records, {})
 
         if i < len(alunos_ids) - 1:
             time.sleep(_FETCH_DELAY)
@@ -142,14 +200,20 @@ def fetch_all_boletins(
     progress.empty()
 
     if errors:
-        st.warning(f"{len(errors)} erro(s) ao buscar boletins. Primeiros 5:")
-        for err in errors[:5]:
-            st.caption(f"  - {err}")
+        with st.expander(
+            f"⚠️ {len(errors)} erro(s) ao buscar boletins "
+            f"({len(all_records)} registros salvos)",
+            expanded=False,
+        ):
+            for err in errors[:20]:
+                st.caption(f"  - {err}")
+            if len(errors) > 20:
+                st.caption(f"  ... e mais {len(errors) - 20} erros.")
 
     df = pd.DataFrame(all_records) if all_records else pd.DataFrame()
     meta = store._save(
         cache_key, "pedagogico/boletins_consolidados",
-        {}, df, TTL_PERMANENT,
+        {"erros": len(errors)}, df, TTL_PERMANENT,
     )
     return df, meta
 
@@ -164,6 +228,7 @@ def fetch_diarios_completos(
 
     For each turma: fetch diarios, then for each diario: fetch diario_frequencia.
     Returns consolidated DataFrame with frequency classification.
+    Resilient to per-turma/diario errors with partial saves.
     """
     from activesoft_client.endpoints import diarios, diario_frequencia
 
@@ -217,7 +282,6 @@ def fetch_diarios_completos(
         try:
             freq_data = diario_frequencia(client, diario_id=did)
             if isinstance(freq_data, list):
-                # Process each student row
                 freq_df = pd.DataFrame(freq_data) if freq_data else pd.DataFrame()
                 if not freq_df.empty:
                     freq_cols = [c for c in freq_df.columns if c.startswith("presenca_falta_")]
@@ -242,16 +306,40 @@ def fetch_diarios_completos(
     progress.empty()
 
     if errors:
-        st.warning(f"{len(errors)} erro(s) ao buscar diarios/frequencia. Primeiros 5:")
-        for err in errors[:5]:
-            st.caption(f"  - {err}")
+        with st.expander(
+            f"⚠️ {len(errors)} erro(s) ao buscar diarios/frequencia",
+            expanded=False,
+        ):
+            for err in errors[:20]:
+                st.caption(f"  - {err}")
+            if len(errors) > 20:
+                st.caption(f"  ... e mais {len(errors) - 20} erros.")
 
     df = pd.DataFrame(all_records) if all_records else pd.DataFrame()
     meta = store._save(
         cache_key, "pedagogico/diarios_completos",
-        {}, df, TTL_PERMANENT,
+        {"erros": len(errors)}, df, TTL_PERMANENT,
     )
     return df, meta
+
+
+def _save_partial(
+    store: CacheStore,
+    cache_key: str,
+    endpoint_name: str,
+    records: List[Dict],
+    extra_params: Dict,
+):
+    """Save partial results to cache (overwriting previous partial)."""
+    try:
+        df = pd.DataFrame(records)
+        store._save(
+            cache_key, endpoint_name,
+            {**extra_params, "status": "parcial", "registros": len(records)},
+            df, TTL_PERMANENT,
+        )
+    except Exception as e:
+        logger.warning("Failed to save partial %s data: %s", endpoint_name, e)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -261,6 +349,7 @@ def fetch_diarios_completos(
 def detect_risco_evasao(
     freq_df: pd.DataFrame,
     boletim_df: pd.DataFrame,
+    alunos_nomes: Optional[Dict[int, str]] = None,
     threshold_faltas_pct: float = 25.0,
     threshold_nota_min: float = 6.0,
     min_disciplinas_risco: int = 3,
@@ -275,6 +364,7 @@ def detect_risco_evasao(
     Returns: id_aluno, nome_aluno, turma, tipo_risco, nivel_risco, detalhes, acao_sugerida
     """
     results: List[Dict] = []
+    alunos_nomes = alunos_nomes or {}
 
     # ── Frequency-based risk ─────────────────────────────────────
     alunos_freq_risco = set()
@@ -295,7 +385,7 @@ def detect_risco_evasao(
     # ── Combined risk ────────────────────────────────────────────
     combined = alunos_freq_risco & alunos_nota_risco
     for aid in combined:
-        # Find existing entries and upgrade them
+        # Upgrade existing entries to ALTO
         for r in results:
             if r["id_aluno"] == aid:
                 r["nivel_risco"] = "ALTO"
@@ -312,19 +402,31 @@ def detect_risco_evasao(
 
     result_df = pd.DataFrame(results)
 
-    # Enrich nome_aluno from boletim_df or freq_df
+    # Enrich nome_aluno from provided mapping + source DataFrames
     if not result_df.empty:
-        nome_map = {}
+        nome_map = dict(alunos_nomes)
         for src_df in [boletim_df, freq_df]:
             if src_df.empty:
                 continue
             id_col = _find_col(src_df, ["id_aluno", "_id_aluno_fetch", "aluno_id"])
-            nome_col = _find_col(src_df, ["nome_aluno", "nome", "nome_completo"])
+            nome_col = _find_col(src_df, ["nome_aluno", "aluno", "nome", "nome_completo"])
             if id_col and nome_col:
                 for _, row in src_df[[id_col, nome_col]].drop_duplicates().iterrows():
-                    nome_map[row[id_col]] = row[nome_col]
+                    aid = row[id_col]
+                    name = row[nome_col]
+                    if aid and name and str(name).strip():
+                        nome_map[aid] = str(name).strip()
         if nome_map:
-            result_df["nome_aluno"] = result_df["id_aluno"].map(nome_map).fillna(result_df["nome_aluno"])
+            result_df["nome_aluno"] = result_df["id_aluno"].map(
+                lambda x: nome_map.get(x, "")
+            ).where(
+                result_df["nome_aluno"].astype(str).str.strip() == "",
+                result_df["nome_aluno"],
+            )
+            # Simpler: override blanks
+            for i, row in result_df.iterrows():
+                if not str(row.get("nome_aluno", "")).strip():
+                    result_df.at[i, "nome_aluno"] = nome_map.get(row["id_aluno"], "")
 
     return result_df
 
@@ -352,12 +454,7 @@ def audit_diarios_docentes(
         return pd.DataFrame(results)
 
     # Group by diario
-    group_cols = []
-    for col in ["diario_id", "turma_id", "disciplina", "fase_nota"]:
-        if col in diarios_df.columns:
-            group_cols.append(col)
-
-    if not group_cols or "diario_id" not in diarios_df.columns:
+    if "diario_id" not in diarios_df.columns:
         return pd.DataFrame(results)
 
     for diario_id, group in diarios_df.groupby("diario_id"):
@@ -423,7 +520,6 @@ def compute_compliance_by_turma(audit_df: pd.DataFrame) -> pd.DataFrame:
     if audit_df.empty or "turma_id" not in audit_df.columns:
         return pd.DataFrame()
 
-    # compliance = diarios without issues / total diarios
     total = audit_df.groupby("turma_id").size().reset_index(name="total_diarios")
     pendentes = audit_df[audit_df["status"] == "Pendente"].groupby("turma_id").size().reset_index(name="pendentes")
 
@@ -450,10 +546,27 @@ def _find_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
 def _flatten_boletim(aluno_id: int, data: Any) -> List[Dict]:
     """Flatten a detalhe_boletim response into tabular rows.
 
-    The response structure varies — this handles common patterns:
-    - dict with nested 'turmas' -> 'disciplinas' -> 'notas'
-    - list of dicts with grade fields
-    - single dict with flat fields
+    Real API structure:
+    {
+        "aluno": "Student Name",
+        "aluno_matricula": "12345",
+        "boletim": [
+            {
+                "turma": "Class Name",
+                "boletim": [
+                    {
+                        "IdDisciplina": 123,
+                        "NomeDisciplina": "Matematica",
+                        "Nota01": 8.5, "Nota02": 7.0, ...
+                        "NotaFase": 7.75, "Faltas": 2,
+                        "QuantAulasDadas": 20,
+                        "MediaMinimaAprovacao": 6.0,
+                        "CabecBoletim": "1 TRI"
+                    }
+                ]
+            }
+        ]
+    }
     """
     rows: List[Dict] = []
 
@@ -461,58 +574,80 @@ def _flatten_boletim(aluno_id: int, data: Any) -> List[Dict]:
         return rows
 
     if isinstance(data, dict):
-        # Try nested pattern: {turmas: [{disciplinas: [{notas: [...]}]}]}
-        turmas = data.get("turmas", data.get("turma", []))
-        if isinstance(turmas, list):
-            for turma in turmas:
-                turma_nome = turma.get("nome_turma", turma.get("nome", ""))
-                turma_id = turma.get("id_turma", turma.get("id", ""))
-                disciplinas = turma.get("disciplinas", turma.get("materias", []))
+        # Extract student name from top level (real API has "aluno" = name)
+        aluno_nome = data.get("aluno", "")
+        aluno_mat = data.get("aluno_matricula", "")
+
+        # Real structure: {"boletim": [{"turma": "...", "boletim": [...]}]}
+        boletim_list = data.get("boletim", [])
+        if isinstance(boletim_list, list) and boletim_list:
+            for turma_block in boletim_list:
+                if not isinstance(turma_block, dict):
+                    continue
+                turma_nome = turma_block.get("turma", "")
+                disciplinas = turma_block.get("boletim", [])
+
                 if isinstance(disciplinas, list):
                     for disc in disciplinas:
+                        if not isinstance(disc, dict):
+                            continue
                         row = {
                             "id_aluno": aluno_id,
-                            "turma_id": turma_id,
+                            "nome_aluno": aluno_nome,
+                            "aluno_matricula": aluno_mat,
                             "turma_nome": turma_nome,
-                            "disciplina": disc.get("nome_disciplina", disc.get("nome", "")),
-                            "disciplina_id": disc.get("id_disciplina", disc.get("id", "")),
+                            "disciplina": disc.get("NomeDisciplina", disc.get("nome_disciplina", "")),
+                            "disciplina_id": disc.get("IdDisciplina", disc.get("id_disciplina", "")),
+                            "cabec_boletim": disc.get("CabecBoletim", ""),
                         }
-                        # Extract grade fields (fase1, fase2, media, etc.)
-                        notas = disc.get("notas", disc.get("fases", {}))
-                        if isinstance(notas, dict):
-                            row.update(notas)
-                        elif isinstance(notas, list):
-                            for n in notas:
-                                if isinstance(n, dict):
-                                    fase = n.get("fase", n.get("nome_fase", ""))
-                                    nota = n.get("nota", n.get("valor", ""))
-                                    if fase:
-                                        row[f"nota_{fase}"] = nota
-                        # Also check flat grade fields
+                        # Extract all grade fields (Nota01..Nota10, NotaFase, etc.)
                         for k, v in disc.items():
-                            if k.startswith("nota") or k.startswith("media") or k.startswith("fase"):
+                            k_lower = k.lower()
+                            if (k_lower.startswith("nota") or
+                                k_lower.startswith("media") or
+                                k_lower in ("faltas", "quantaulasdadas",
+                                            "mediaminimaaprovacao")):
                                 row[k] = v
                         rows.append(row)
-                    if not disciplinas:
-                        # No disciplines, just record that aluno has this turma
-                        rows.append({
-                            "id_aluno": aluno_id,
-                            "turma_id": turma_id,
-                            "turma_nome": turma_nome,
-                        })
-            if not turmas:
-                # Flat structure — just record all fields
-                row = {"id_aluno": aluno_id}
-                row.update({k: v for k, v in data.items() if not isinstance(v, (list, dict))})
-                rows.append(row)
-        elif isinstance(turmas, dict):
-            # Single turma as dict
-            row = {"id_aluno": aluno_id}
-            row.update({k: v for k, v in turmas.items() if not isinstance(v, (list, dict))})
-            rows.append(row)
-        else:
-            # Flat dict — just record all scalar fields
-            row = {"id_aluno": aluno_id}
+
+                if not disciplinas:
+                    rows.append({
+                        "id_aluno": aluno_id,
+                        "nome_aluno": aluno_nome,
+                        "aluno_matricula": aluno_mat,
+                        "turma_nome": turma_nome,
+                    })
+
+        # Fallback: try old structure with "turmas"
+        if not rows:
+            turmas = data.get("turmas", data.get("turma", []))
+            if isinstance(turmas, list):
+                for turma in turmas:
+                    if not isinstance(turma, dict):
+                        continue
+                    turma_nome = turma.get("nome_turma", turma.get("nome", ""))
+                    turma_id_val = turma.get("id_turma", turma.get("id", ""))
+                    disciplinas = turma.get("disciplinas", turma.get("materias", []))
+                    if isinstance(disciplinas, list):
+                        for disc in disciplinas:
+                            if not isinstance(disc, dict):
+                                continue
+                            row = {
+                                "id_aluno": aluno_id,
+                                "nome_aluno": aluno_nome,
+                                "turma_id": turma_id_val,
+                                "turma_nome": turma_nome,
+                                "disciplina": disc.get("nome_disciplina", disc.get("nome", "")),
+                                "disciplina_id": disc.get("id_disciplina", disc.get("id", "")),
+                            }
+                            for k, v in disc.items():
+                                if k.startswith("nota") or k.startswith("media") or k.startswith("fase"):
+                                    row[k] = v
+                            rows.append(row)
+
+        # Last fallback: flat dict
+        if not rows:
+            row = {"id_aluno": aluno_id, "nome_aluno": aluno_nome}
             row.update({k: v for k, v in data.items() if not isinstance(v, (list, dict))})
             rows.append(row)
 
@@ -538,13 +673,10 @@ def _analyze_frequency_risk(
         return results
 
     # Try to group by student and compute absence rate
-    # The freq data from listar_frequencia_aluno has varied structure
-    # Look for date/tipo fields
     tipo_col = _find_col(freq_df, ["tipo_marcacao", "tipo", "presenca"])
     data_col = _find_col(freq_df, ["data", "data_aula", "data_registro"])
 
     if tipo_col:
-        # Count total entries and absences per student
         for aluno_id, group in freq_df.groupby(id_col):
             total = len(group)
             if total == 0:
@@ -607,14 +739,16 @@ def _analyze_grade_risk(
     if boletim_df.empty or "id_aluno" not in boletim_df.columns:
         return results
 
-    # Find grade columns
-    nota_cols = [c for c in boletim_df.columns if c.startswith("nota") or c.startswith("media")]
+    # Find grade columns -- real API uses NotaFase, Nota01..Nota10, MediaMinimaAprovacao
+    nota_cols = [c for c in boletim_df.columns
+                 if c.lower().startswith("nota") or c.lower().startswith("media")]
 
-    if not nota_cols:
-        # Try to find any numeric-looking columns that might be grades
-        for c in boletim_df.columns:
-            if c.lower() in ("nota", "media", "media_final", "nota_final"):
-                nota_cols.append(c)
+    # Prefer NotaFase as the primary grade indicator
+    primary_nota = None
+    for c in boletim_df.columns:
+        if c.lower() == "notafase":
+            primary_nota = c
+            break
 
     if not nota_cols:
         return results
@@ -623,6 +757,15 @@ def _analyze_grade_risk(
         disciplinas_baixas = []
         for _, row in group.iterrows():
             disc = row.get("disciplina", "Desconhecida")
+
+            # Check primary grade first (NotaFase), then any nota column
+            if primary_nota and primary_nota in row.index:
+                val = pd.to_numeric(row.get(primary_nota), errors="coerce")
+                if pd.notna(val) and val < threshold_nota:
+                    disciplinas_baixas.append(f"{disc} (nota={val:.1f})")
+                    continue
+
+            # Fallback: check all grade columns
             for nc in nota_cols:
                 val = pd.to_numeric(row.get(nc), errors="coerce")
                 if pd.notna(val) and val < threshold_nota:
@@ -632,9 +775,10 @@ def _analyze_grade_risk(
         if len(disciplinas_baixas) >= min_disciplinas:
             nivel = "ALTO" if len(disciplinas_baixas) >= min_disciplinas + 2 else "MEDIO"
             turma = group["turma_nome"].iloc[0] if "turma_nome" in group.columns else ""
+            nome = group["nome_aluno"].iloc[0] if "nome_aluno" in group.columns else ""
             results.append({
                 "id_aluno": aluno_id,
-                "nome_aluno": "",
+                "nome_aluno": nome,
                 "turma": turma,
                 "tipo_risco": "NOTAS_CRITICAS",
                 "nivel_risco": nivel,

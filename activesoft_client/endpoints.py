@@ -36,6 +36,14 @@ def listar_frequencia_aluno(
     data_final: Optional[str] = None,
     tipo_marcacao: Optional[str] = None,
 ) -> Any:
+    """Fetch frequency records for a single student.
+
+    Note: The API returns HTTP 404 with {"mensagem": "Nenhuma informação encontrada"}
+    when the student has no records. We catch this and return an empty list instead
+    of raising an error.
+    """
+    from .http_client import APIError
+
     params: Dict[str, Any] = {"aluno_id": aluno_id}
     if data_inicial:
         params["data_inicial"] = data_inicial
@@ -43,7 +51,13 @@ def listar_frequencia_aluno(
         params["data_final"] = data_final
     if tipo_marcacao:
         params["tipo_marcacao"] = tipo_marcacao
-    return client.get_all("/api/v0/listar_frequencia_aluno/", params=params)
+    try:
+        return client.get_all("/api/v0/listar_frequencia_aluno/", params=params)
+    except APIError as e:
+        # 404 means "no data for this student" — not an error
+        if e.status == 404:
+            return []
+        raise
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -151,8 +165,19 @@ def financeiro_calculo_multa_juros(client: ActiveSoftClient) -> List[Dict]:
 def informacoes_boleto(
     client: ActiveSoftClient, id_aluno: int, **kw: Any
 ) -> List[Dict]:
+    """Fetch boletos for a single student.
+
+    IMPORTANT: This endpoint returns {"resultados": [...]} NOT {"results": [...]},
+    so we use client.get() and extract "resultados" manually.
+    """
     params: Dict[str, Any] = {"id_aluno": id_aluno, **kw}
-    return client.get_all("/api/v0/informacoes_boleto/", params=params)
+    data = client.get("/api/v0/informacoes_boleto/", params=params)
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        # API returns {"resultados": [...]} — extract the list
+        return data.get("resultados", data.get("results", []))
+    return []
 
 
 # ═══════════════════════════════════════════════════════════════════

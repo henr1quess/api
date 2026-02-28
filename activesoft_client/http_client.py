@@ -75,15 +75,23 @@ class ActiveSoftClient:
                     json=json_body,
                     timeout=self.timeout,
                 )
-                if resp.status_code in (429,) or 500 <= resp.status_code < 600:
+                # Retry on rate limiting (429), server errors (5xx), and
+                # forbidden (403) which the ActiveSoft API uses for
+                # temporary rate-limit blocks during bulk operations.
+                if resp.status_code in (429, 403) or 500 <= resp.status_code < 600:
                     if attempt <= self.max_retries:
-                        wait = min(8.0, 0.5 * (2 ** (attempt - 1)))
+                        # 403 gets longer waits — it's rate limiting
+                        if resp.status_code == 403:
+                            wait = min(30.0, 2.0 * (2 ** (attempt - 1)))
+                        else:
+                            wait = min(15.0, 1.0 * (2 ** (attempt - 1)))
                         logger.warning(
-                            "Retry %d for %s %s (status %s)",
+                            "Retry %d for %s %s (status %s, wait %.1fs)",
                             attempt,
                             method,
                             path,
                             resp.status_code,
+                            wait,
                         )
                         time.sleep(wait)
                         continue
