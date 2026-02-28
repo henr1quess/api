@@ -59,10 +59,11 @@ def _render_farol_risco():
     # ── Load controls ────────────────────────────────────────────
     col_load, col_info = st.columns([1, 3])
     with col_load:
-        if st.button("📥 Carregar dados pedagogicos", key="btn_load_pedagogico"):
-            st.session_state["_ped_force_refresh"] = True
-
-        if st.button("🔄 Atualizar dados", key="btn_refresh_pedagogico"):
+        if st.button(
+            "📥 Carregar / Atualizar dados pedagogicos",
+            key="btn_load_pedagogico",
+            use_container_width=True,
+        ):
             st.session_state["_ped_force_refresh"] = True
 
     force = st.session_state.pop("_ped_force_refresh", False)
@@ -234,10 +235,11 @@ def _render_auditoria_diarios():
     # ── Load controls ────────────────────────────────────────────
     col_load, col_info = st.columns([1, 3])
     with col_load:
-        if st.button("📥 Carregar diarios", key="btn_load_diarios"):
-            st.session_state["_diarios_force_refresh"] = True
-
-        if st.button("🔄 Atualizar diarios", key="btn_refresh_diarios"):
+        if st.button(
+            "📥 Carregar / Atualizar diarios",
+            key="btn_load_diarios",
+            use_container_width=True,
+        ):
             st.session_state["_diarios_force_refresh"] = True
 
     force = st.session_state.pop("_diarios_force_refresh", False)

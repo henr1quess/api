@@ -3,6 +3,9 @@
 Tabs: Executivo | Cobranca | Inconsistencias | Operacoes Adversas | Exportacoes
 """
 
+import logging
+import time
+
 import streamlit as st
 
 from ui.components import (
@@ -28,25 +31,14 @@ from activesoft_client.endpoints import (
 )
 import pandas as pd
 
+logger = logging.getLogger(__name__)
+
 
 def render():
     st.title("💰 Financeiro")
 
     client = require_client()
     store = get_cache_store()
-
-    # ── Load base data (students + services) ─────────────────────
-    @st.cache_data(ttl=3600, show_spinner=False)
-    def _load_alunos():
-        return lista_alunos(client)
-
-    @st.cache_data(ttl=3600, show_spinner=False)
-    def _load_alunos_ativos():
-        return acesso_alunos(client)
-
-    @st.cache_data(ttl=3600, show_spinner=False)
-    def _load_servicos():
-        return financeiro_servicos(client)
 
     # ── Session state for financial data ─────────────────────────
     if "fin_df" not in st.session_state:
@@ -90,48 +82,61 @@ def _render_executivo(client, store):
 
     col_load, col_info = st.columns([1, 3])
     with col_load:
-        if st.button("📥 Carregar boletos 2026", key="btn_load_boletos"):
+        ano = st.selectbox("Ano:", [2026, 2025, 2024], key="fin_ano_sel")
+        if st.button(
+            "📥 Carregar / Atualizar dados",
+            key="btn_load_boletos",
+            use_container_width=True,
+        ):
             st.session_state["_fin_force_refresh"] = True
 
-        if st.button("🔄 Atualizar dados", key="btn_refresh_boletos"):
-            st.session_state["_fin_force_refresh"] = True
-
-    # Load data
     force = st.session_state.pop("_fin_force_refresh", False)
     fin_df = st.session_state.get("fin_df", pd.DataFrame())
     fin_meta = st.session_state.get("fin_meta")
 
     if force or fin_df.empty:
-        if force or fin_df.empty:
-            try:
-                alunos_ativos = acesso_alunos(client)
-                alunos_ids = [a.get("id_aluno", a.get("id", a.get("aluno_id")))
-                              for a in alunos_ativos if a.get("id_aluno") or a.get("id")]
-                alunos_ids = [int(x) for x in alunos_ids if x is not None]
+        try:
+            alunos_ativos = acesso_alunos(client)
+            alunos_ids = [a.get("id_aluno", a.get("id", a.get("aluno_id")))
+                          for a in alunos_ativos if a.get("id_aluno") or a.get("id")]
+            alunos_ids = [int(x) for x in alunos_ids if x is not None]
 
-                if not alunos_ids:
-                    st.warning("Nenhum aluno ativo encontrado.")
-                    return
-
-                boletos_df, meta = fetch_all_boletos(
-                    client, store, alunos_ids,
-                    ano=2026, force_refresh=force,
-                )
-
-                alunos_df = pd.DataFrame(lista_alunos(client))
-                servicos_df = pd.DataFrame(financeiro_servicos(client))
-
-                fin_df = build_financial_dataset(boletos_df, alunos_df, servicos_df)
-                st.session_state["fin_df"] = fin_df
-                st.session_state["fin_meta"] = meta
-                fin_meta = meta
-            except Exception as e:
-                st.error(f"Erro ao carregar dados financeiros: {e}")
+            if not alunos_ids:
+                st.warning("Nenhum aluno ativo encontrado.")
                 return
+
+            boletos_df, meta = fetch_all_boletos(
+                client, store, alunos_ids,
+                ano=ano, force_refresh=force,
+            )
+
+            # Best-effort: enrich with auxiliary data.
+            # These endpoints may fail with 403 after heavy API usage;
+            # boleto data already contains student names and service info.
+            alunos_df = pd.DataFrame()
+            servicos_df = pd.DataFrame()
+            if force:
+                try:
+                    time.sleep(2.0)  # brief pause after bulk fetch
+                    alunos_df = pd.DataFrame(lista_alunos(client))
+                except Exception:
+                    logger.info("lista_alunos indisponivel (best-effort)")
+                try:
+                    servicos_df = pd.DataFrame(financeiro_servicos(client))
+                except Exception:
+                    logger.info("financeiro_servicos indisponivel (best-effort)")
+
+            fin_df = build_financial_dataset(boletos_df, alunos_df, servicos_df)
+            st.session_state["fin_df"] = fin_df
+            st.session_state["fin_meta"] = meta
+            fin_meta = meta
+        except Exception as e:
+            st.error(f"Erro ao carregar dados financeiros: {e}")
+            return
 
     if fin_df.empty:
         with col_info:
-            st.info("Clique em **Carregar boletos 2026** para baixar os dados da API.")
+            st.info("Clique em **Carregar / Atualizar dados** para baixar da API.")
         return
 
     # Show cache info
