@@ -73,7 +73,24 @@ def cached_fetch(
             force_refresh=force,
         )
     except Exception as exc:
-        st.error(f"Erro ao buscar {endpoint_name}: {exc}")
+        # API falhou e não há cache exato para este filtro.
+        # Tentar fallback: qualquer cache existente deste endpoint.
+        fallback = store.find_latest_for_endpoint(endpoint_name)
+        if fallback is not None:
+            df, meta = fallback
+            st.warning(
+                f"⚠️ API indisponivel — mostrando dados em cache de {meta.age_str()} atras. "
+                f"Clique 🔄 Atualizar quando a conexao voltar.",
+                icon="📦",
+            )
+            show_cache_info(meta, True, refresh_flag, st_key or endpoint_name)
+            return df, meta
+        st.info(
+            f"📭 Sem dados em cache para **{endpoint_name}**. "
+            f"Verifique o token em `.env` e clique 🔄 Atualizar.",
+        )
+        with st.expander("Detalhes do erro"):
+            st.code(str(exc))
         return None, None
 
     # Show cache status

@@ -302,3 +302,23 @@ class CacheStore:
             except Exception:
                 pass
         return datasets
+
+    def find_latest_for_endpoint(
+        self, endpoint_name: str
+    ) -> Optional[Tuple[pd.DataFrame, DatasetMeta]]:
+        """Return the most recent cached dataset for an endpoint, regardless of params.
+
+        Used as graceful fallback when the API is unreachable and there is no
+        cache for the exact current filter — better to show slightly wrong
+        data than a blocking error.
+        """
+        best: Optional[DatasetMeta] = None
+        for meta in self.list_datasets():
+            if meta.endpoint != endpoint_name:
+                continue
+            if best is None or meta.timestamp > best.timestamp:
+                best = meta
+        if best is None:
+            return None
+        loaded = self._load(best.key)
+        return loaded
