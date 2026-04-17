@@ -37,27 +37,17 @@ with st.sidebar:
     st.caption("Automacao escolar – SigaWeb API")
     st.divider()
 
-    # Credentials
-    base_url = st.text_input(
-        "URL Base",
-        value=os.getenv("ERP_BASE_URL", "https://siga.activesoft.com.br"),
-    )
-    token = st.text_input(
-        "Token da API",
-        type="password",
-        value=os.getenv("ERP_TOKEN", ""),
-    )
+    # Credentials from .env only
+    base_url = os.getenv("ERP_BASE_URL", "").rstrip("/")
+    token = os.getenv("ERP_TOKEN", "").strip()
 
     if token and base_url:
-        # Only create a new client if inputs changed
-        key = f"{base_url}|{token}"
-        if st.session_state.get("_client_key") != key:
+        if "client" not in st.session_state:
             st.session_state["client"] = ActiveSoftClient(base_url, token)
-            st.session_state["_client_key"] = key
         st.success("Conectado", icon="✅")
     else:
         st.session_state.pop("client", None)
-        st.warning("Insira o token para comecar.")
+        st.error("ERP_BASE_URL ou ERP_TOKEN nao configurado no .env")
 
     st.divider()
 
