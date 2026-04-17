@@ -29,6 +29,7 @@ TTL_ACADEMICO = 12.0
 TTL_FREQUENCIA = 4.0
 TTL_FINANCEIRO = 12.0
 TTL_DEFAULT = 8.0
+TTL_PERMANENT = 87600.0  # ~10 anos — cache permanente, refresh so via botao
 
 ENDPOINT_TTL: Dict[str, float] = {
     "acesso_alunos": TTL_CADASTRO,

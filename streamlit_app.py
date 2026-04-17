@@ -21,7 +21,14 @@ if str(ROOT) not in sys.path:
 load_dotenv(ROOT / ".env")
 
 from activesoft_client import ActiveSoftClient  # noqa: E402
-from ui import page_home, page_grades, page_freq_query, page_freq_mark, page_explorer, page_audit  # noqa: E402
+from ui import (  # noqa: E402
+    page_home,
+    page_financeiro,
+    page_academico,
+    page_operacoes,
+    page_explorer,
+    page_audit,
+)
 
 # ── Page config ──────────────────────────────────────────────────
 st.set_page_config(
@@ -54,11 +61,11 @@ with st.sidebar:
     # Navigation
     PAGES = {
         "🏠 Inicio": "home",
-        "📝 Importar Notas": "grades",
-        "📋 Frequencia – Consulta": "freq_query",
-        "📌 Frequencia – Marcacao": "freq_mark",
-        "🔍 Explorer de Dados": "explorer",
-        "📊 Auditoria": "audit",
+        "💰 Financeiro": "financeiro",
+        "🎓 Academico": "academico",
+        "⚙️ Operacoes": "operacoes",
+        "🔍 Explorer API": "explorer",
+        "📜 Auditoria": "audit",
     }
 
     page = st.radio("Navegacao", list(PAGES.keys()), label_visibility="collapsed")
@@ -75,12 +82,12 @@ page_key = PAGES.get(page, "home")
 
 if page_key == "home":
     page_home.render()
-elif page_key == "grades":
-    page_grades.render()
-elif page_key == "freq_query":
-    page_freq_query.render()
-elif page_key == "freq_mark":
-    page_freq_mark.render()
+elif page_key == "financeiro":
+    page_financeiro.render()
+elif page_key == "academico":
+    page_academico.render()
+elif page_key == "operacoes":
+    page_operacoes.render()
 elif page_key == "explorer":
     page_explorer.render()
 elif page_key == "audit":

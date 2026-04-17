@@ -36,6 +36,14 @@ def listar_frequencia_aluno(
     data_final: Optional[str] = None,
     tipo_marcacao: Optional[str] = None,
 ) -> Any:
+    """Fetch frequency records for a single student.
+
+    Note: The API returns HTTP 404 with {"mensagem": "Nenhuma informação encontrada"}
+    when the student has no records. We catch this and return an empty list instead
+    of raising an error.
+    """
+    from .http_client import APIError
+
     params: Dict[str, Any] = {"aluno_id": aluno_id}
     if data_inicial:
         params["data_inicial"] = data_inicial
@@ -43,7 +51,13 @@ def listar_frequencia_aluno(
         params["data_final"] = data_final
     if tipo_marcacao:
         params["tipo_marcacao"] = tipo_marcacao
-    return client.get_all("/api/v0/listar_frequencia_aluno/", params=params)
+    try:
+        return client.get_all("/api/v0/listar_frequencia_aluno/", params=params)
+    except APIError as e:
+        # 404 means "no data for this student" — not an error
+        if e.status == 404:
+            return []
+        raise
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -151,8 +165,19 @@ def financeiro_calculo_multa_juros(client: ActiveSoftClient) -> List[Dict]:
 def informacoes_boleto(
     client: ActiveSoftClient, id_aluno: int, **kw: Any
 ) -> List[Dict]:
+    """Fetch boletos for a single student.
+
+    IMPORTANT: This endpoint returns {"resultados": [...]} NOT {"results": [...]},
+    so we use client.get() and extract "resultados" manually.
+    """
     params: Dict[str, Any] = {"id_aluno": id_aluno, **kw}
-    return client.get_all("/api/v0/informacoes_boleto/", params=params)
+    data = client.get("/api/v0/informacoes_boleto/", params=params)
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        # API returns {"resultados": [...]} — extract the list
+        return data.get("resultados", data.get("results", []))
+    return []
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -283,5 +308,25 @@ EXPLORER_ENDPOINTS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v0/financeiro/forma_recebimento/",
         "description": "Formas de recebimento",
         "params": [],
+    },
+    "financeiro/calculo_multa_juros": {
+        "path": "/api/v0/financeiro/calculo_multa_juros/",
+        "description": "Calculo de multa e juros",
+        "params": [],
+    },
+    "informacoes_boleto": {
+        "path": "/api/v0/informacoes_boleto/",
+        "description": "Informacoes de boleto por aluno",
+        "params": ["id_aluno"],
+    },
+    "detalhe_boletim": {
+        "path": "/api/v0/detalhe_boletim/",
+        "description": "Detalhe do boletim por aluno",
+        "params": ["aluno_id", "turma_id", "turmas_ativas"],
+    },
+    "listar_frequencia_aluno": {
+        "path": "/api/v0/listar_frequencia_aluno/",
+        "description": "Frequencia do aluno",
+        "params": ["aluno_id", "data_inicial", "data_final", "tipo_marcacao"],
     },
 }
